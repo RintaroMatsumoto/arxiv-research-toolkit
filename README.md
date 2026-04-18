@@ -1,32 +1,71 @@
 # arxiv-research-toolkit
 
-> Pre-release — placeholder repository. No working code yet.
+Research toolkit for Claude. Search, summarize, synthesize, export, and
+explore academic papers from arXiv and Semantic Scholar, right inside a
+Claude session.
 
-Research toolkit for Claude. Search, summarize, and synthesize academic papers from arXiv, Semantic Scholar, and PubMed.
+`v0.1.0` — five skills shipped as an alpha. The surface will stay
+backward-compatible during the `0.1.x` line; breaking changes wait for
+`0.2.0`.
 
-This repository reserves the name and documents design intentions. Implementation will follow once the portfolio plan enters the build phase.
+## Skills
 
-## Planned skills
+- **paper-search** `[alpha]` — Query arXiv via its public Atom API and
+  return a ranked Markdown table of papers. Stdlib-only.
+- **paper-summarize** `[alpha]` — Fetch a paper PDF (arXiv ID, URL, or
+  local path), extract its text, and produce a structured summary (TL;DR
+  / Key contributions / Method / Results / Limitations / Open questions).
+- **lit-review-draft** `[alpha]` — Consolidate a paper set (JSON from
+  `paper-search` or hand-assembled) into a themed literature review
+  draft with BibTeX-friendly cite keys and a gap analysis.
+- **zotero-export** `[alpha]` — Push a paper set into the local Zotero
+  connector (port 23119) and always emit a sibling `.bib` file as a
+  fallback. Stdlib-only.
+- **citation-network** `[alpha]` — Walk Semantic Scholar's citation
+  graph from one or more seed papers and emit a JSON node/edge graph
+  plus an optional SVG.
 
-- **paper-search** `[planned]` — Cross-search arXiv, Semantic Scholar, and PubMed with unified result schema.
-- **paper-summarize** `[planned]` — Claude API-powered PDF summarization with key contributions extraction.
-- **lit-review-draft** `[planned]` — Generate literature review drafts from a set of papers.
-- **zotero-export** `[planned]` — BibTeX and Zotero library export via the local Zotero HTTP server.
-- **citation-network** `[planned]` — Build and visualize citation graphs across a paper set.
+## Requirements
 
-## Requirements (planned)
+- Python 3.8+ on PATH.
+- `pypdf` for `paper-summarize` only: `pip install pypdf`. Other skills
+  are stdlib-only.
+- Zotero desktop 6.x+ running locally for the Zotero leg of
+  `zotero-export` (optional — BibTeX output works without it).
+- Optional: `SEMANTIC_SCHOLAR_API_KEY` env var for
+  `citation-network`'s higher rate-limit tier.
 
-- Python 3.10+
-- `arxiv` Python package
-- Zotero Local Server (port 23119) for library sync
-- Anthropic API key for summarization skills
+## Canonical paper-record schema
+
+Every skill that exchanges paper data uses the same record shape:
+
+```json
+{
+  "id": "2401.12345",
+  "source": "arxiv",
+  "title": "...",
+  "authors": ["..."],
+  "year": 2024,
+  "venue": "arXiv",
+  "abstract": "...",
+  "url": "https://arxiv.org/abs/2401.12345",
+  "pdf_url": "https://arxiv.org/pdf/2401.12345.pdf",
+  "categories": ["cs.LG"],
+  "published": "2024-01-18T12:00:00Z"
+}
+```
+
+Chaining is deliberate: `paper-search → paper-summarize → lit-review-draft`
+for a drafting workflow, and `paper-search → zotero-export` for
+library management. `citation-network` takes any single paper ID as a
+seed.
+
+## Design and ADRs
+
+Overall architecture and open questions live in
+[`DESIGN.md`](DESIGN.md). Per-skill design notes are in
+[`docs/skills/`](docs/skills/).
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
-## Roadmap
-
-See [DESIGN.md](DESIGN.md) for the current design document and milestones.
-
-This is part of a three-plugin portfolio. See [PLUGIN_PORTFOLIO_PLAN.md](https://github.com/RintaroMatsumoto/ProgrammaticVideoGen/blob/main/docs/PLUGIN_PORTFOLIO_PLAN.md).

@@ -1,10 +1,10 @@
 {
   "name": "arxiv-research-toolkit",
-  "version": "0.0.1",
-  "description": "[Pre-release skeleton] Research toolkit for Claude: search, summarize, and synthesize academic papers from arXiv, Semantic Scholar, and PubMed.",
+  "version": "0.1.0",
+  "description": "Research toolkit for Claude: search arXiv, summarize PDFs, draft literature reviews, export to Zotero/BibTeX, and explore citation graphs via Semantic Scholar.",
   "author": {"name": "Rintaro Matsumoto"},
   "homepage": "https://github.com/RintaroMatsumoto/arxiv-research-toolkit",
   "repository": "https://github.com/RintaroMatsumoto/arxiv-research-toolkit",
   "license": "MIT",
-  "keywords": ["research", "academia", "arxiv", "claude", "literature-review", "zotero", "semantic-scholar", "pubmed"]
+  "keywords": ["research", "academia", "arxiv", "claude", "literature-review", "zotero", "semantic-scholar", "pubmed", "bibtex", "citation-graph"]
 }
