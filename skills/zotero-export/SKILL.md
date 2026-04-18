@@ -1,6 +1,6 @@
 ---
 name: zotero-export
-description: Use when the user wants to push a set of papers into their Zotero library, or to produce a BibTeX file — "save these to Zotero", "give me a .bib for this list", "Zotero に入れて", "出力を BibTeX にして". Takes the JSON array produced by paper-search (or any list with the same shape), POSTs to the local Zotero connector on port 23119, and always writes a sibling .bib file as a fallback. Do NOT use for searching (paper-search), summarizing (paper-summarize), or building citation graphs (citation-network).
+description: Use when the user wants to push a set of papers into their Zotero library, or to produce a BibTeX file — "save these to Zotero", "give me a .bib for this list", "Zotero に入れて", "出力を BibTeX にして". Takes the JSON array produced by paper-search, writes to the local Zotero connector (port 23119) OR the Zotero Web API (headless, needs API key), supports collection targeting and optional PDF attachment, and always writes a .bib fallback. Do NOT use for searching (paper-search), summarizing (paper-summarize), or building citation graphs (citation-network).
 ---
 
 # Zotero / BibTeX Export
@@ -28,8 +28,11 @@ Do NOT trigger when:
 ## Prerequisites
 
 - Python 3.8+ on PATH. Stdlib only; no pip installs required.
-- For the Zotero leg: **Zotero desktop 6.x+ running** with the default
-  connector on `127.0.0.1:23119`. No web API key needed.
+- For the **local connector** leg: Zotero desktop 6.x+ running on the
+  same machine, default connector on `127.0.0.1:23119`.
+- For the **Web API** leg: a Zotero API key and userID (or groupID),
+  issued at <https://www.zotero.org/settings/keys>. No Zotero desktop
+  needed — works headlessly.
 - For the BibTeX leg: write access to the chosen output directory.
 
 ## How to run
@@ -38,7 +41,22 @@ The skill folder contains `zotero_export.py`. Call it with the paper
 list (from `paper-search` or hand-assembled):
 
 ```
+# Default: local connector (Zotero desktop must be running)
 python skills/zotero-export/zotero_export.py --input results.json
+
+# Drop into a specific collection by its 8-char Zotero key
+python skills/zotero-export/zotero_export.py --input results.json --collection AB12CD34
+
+# Web API mode (headless; no Zotero desktop required)
+python skills/zotero-export/zotero_export.py --input results.json \
+    --api-key $ZOTERO_API_KEY --user-id 1234567 --collection AB12CD34
+
+# Attach open-access PDFs as linked-URL children (Web API only)
+python skills/zotero-export/zotero_export.py --input results.json \
+    --api-key $ZOTERO_API_KEY --user-id 1234567 --attach-pdfs
+
+# Offline fallback only
+python skills/zotero-export/zotero_export.py --input results.json --bib-only
 ```
 
 Flags:
@@ -48,14 +66,27 @@ Flags:
 | `--input` *or* `--stdin` | paper list source (exactly one, required) |
 | `--bib-out` | explicit path for the .bib file; default is `<input>.bib` |
 | `--bib-only` | skip Zotero entirely; write BibTeX only |
-| `--zotero-only` | skip BibTeX; POST to Zotero only |
+| `--zotero-only` | skip BibTeX; write to Zotero only |
+| `--api-key` | Zotero Web API key (also via `$ZOTERO_API_KEY`). Enables Web API mode. |
+| `--user-id` | Zotero userID (also via `$ZOTERO_USER_ID`) |
+| `--group-id` | Zotero groupID (mutually exclusive with `--user-id`) |
+| `--collection` | 8-char collection key; adds new items to that collection |
+| `--attach-pdfs` | Web API only: create a `linked_url` child for each `pdf_url` |
 
 The script prints a JSON report to stdout:
 
 ```
 {
   "paper_count": 20,
-  "zotero":  {"status": "ok|unreachable|error", "message": "..."},
+  "zotero": {
+    "mode": "connector|web_api",
+    "status": "ok|unreachable|error",
+    "items_sent": 20,
+    "items_created": 20,
+    "collection": "AB12CD34",
+    "attachments_attempted": 17,
+    "attachments_created": 17
+  },
   "bibtex":  {"status": "ok|error", "path": "/abs/path.bib", "entry_count": 20}
 }
 ```
@@ -101,6 +132,20 @@ The script prints a JSON report to stdout:
   `journalArticle`. Extend `to_zotero_item()` if new sources land.
 - The `.bib` leg runs even when Zotero succeeds, so the user always has
   an offline copy of the export.
+- **Web API vs. connector** — Web API mode is preferred for headless
+  use (CI, remote machines, servers). The local connector is faster on
+  the user's own laptop because it bypasses the internet, and supports
+  Zotero's built-in "Save with translator" behaviour automatically if
+  the user points the connector at a paper page. Passing `--api-key`
+  switches mode — we never fall back from Web API to local on failure,
+  because a bad API key is not the kind of error we want to paper over
+  silently.
+- **`--attach-pdfs`** creates `linked_url` attachments — i.e. Zotero
+  stores a hyperlink to `pdf_url`, not the PDF bytes. That avoids the
+  multipart `imported_url` upload dance (md5, file-size, pre-signed
+  upload URL) and keeps this script stdlib-only. Users who want a
+  stored copy can click through and use Zotero's "Attach Stored Copy of
+  File" from the item menu. Full upload support is a v0.3 candidate.
 
 ## Chaining
 

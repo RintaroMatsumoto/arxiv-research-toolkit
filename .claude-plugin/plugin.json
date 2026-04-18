@@ -1,7 +1,7 @@
 {
   "name": "arxiv-research-toolkit",
-  "version": "0.1.0",
-  "description": "Research toolkit for Claude: search arXiv, summarize PDFs, draft literature reviews, export to Zotero/BibTeX, and explore citation graphs via Semantic Scholar.",
+  "version": "0.2.0",
+  "description": "Research toolkit for Claude: search arXiv and Semantic Scholar, summarize PDFs (with scanned-page detection), draft literature reviews, export to Zotero (local connector or Web API) and BibTeX, and explore citation graphs with force-directed / circle / DOT / GraphML outputs.",
   "author": {"name": "Rintaro Matsumoto"},
   "homepage": "https://github.com/RintaroMatsumoto/arxiv-research-toolkit",
   "repository": "https://github.com/RintaroMatsumoto/arxiv-research-toolkit",

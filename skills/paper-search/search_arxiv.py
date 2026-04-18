@@ -15,18 +15,27 @@ Usage:
 The script prints JSON to stdout and any human-readable errors to stderr.
 Exit codes: 0 on success (including zero results), 1 on network failure,
 2 on argument error (argparse default), 3 on parse failure.
+
+Shared helpers from ``skills/_lib/``:
+  net.ensure_utf8_stdout  — avoid cp932 crashes on Windows ja-JP locale.
+  net.fetch_bytes         — SSL-aware HTTP GET with retry.
+  cache.memoized          — per-query response cache (24 h TTL).
+  rate_limit.acquire      — cross-process politeness gate for arxiv.org.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import pathlib
 import sys
-import time
 import urllib.error
 import urllib.parse
-import urllib.request
 import xml.etree.ElementTree as ET
 from typing import Any, Dict, List, Optional
+
+# Make the sibling ``_lib`` package importable regardless of cwd.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+from _lib import cache, net, rate_limit  # noqa: E402
 
 ARXIV_ENDPOINT = "http://export.arxiv.org/api/query"
 ATOM_NS = {
@@ -34,8 +43,7 @@ ATOM_NS = {
     "arxiv": "http://arxiv.org/schemas/atom",
 }
 HARD_MAX_RESULTS = 50
-USER_AGENT = "arxiv-research-toolkit/0.1 (+https://github.com/RintaroMatsumoto/arxiv-research-toolkit)"
-RETRY_BACKOFF_SECONDS = 3.0
+SEARCH_TTL_SECONDS = 24 * 60 * 60  # 24 h for search results.
 
 
 def build_query(query: str, category: Optional[str]) -> str:
@@ -68,18 +76,18 @@ def build_url(
 
 
 def fetch(url: str) -> bytes:
-    """GET the URL with one retry on transient HTTP or URLErrors."""
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return resp.read()
-    except (urllib.error.HTTPError, urllib.error.URLError) as err:
-        sys.stderr.write(
-            f"arxiv fetch failed ({err}); retrying in {RETRY_BACKOFF_SECONDS}s...\n"
-        )
-        time.sleep(RETRY_BACKOFF_SECONDS)
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return resp.read()
+    """GET the URL through the shared cache + rate limiter + net helpers."""
+    def _go() -> bytes:
+        rate_limit.acquire("export.arxiv.org")
+        return net.fetch_bytes(url, timeout=30, retries=1)
+
+    # Cache the raw Atom body keyed on the full URL (query + filters).
+    return cache.memoized(
+        source="arxiv-search",
+        key=url,
+        fetcher=_go,
+        ttl_seconds=SEARCH_TTL_SECONDS,
+    )
 
 
 def _text(entry: ET.Element, path: str) -> str:
@@ -221,6 +229,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[List[str]] = None) -> int:
     """CLI entry point. Returns a process exit code."""
+    net.ensure_utf8_stdout()
     args = build_arg_parser().parse_args(argv)
 
     if args.max_results < 1:

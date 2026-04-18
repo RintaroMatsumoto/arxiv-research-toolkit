@@ -8,11 +8,17 @@ or a local file path, this script:
   1. Resolves the PDF to bytes (download or read from disk).
   2. Extracts a plain-text rendering of the PDF.
   3. Prints the text to stdout, preceded by a small JSON header line with
-     metadata (source, arxiv_id, page_count, char_count).
+     metadata (source, arxiv_id, page_count, char_count, scanned).
 
 The summary itself is produced by Claude in its response — this script's
 only job is to hand back clean text plus enough metadata for Claude to
 cite pages and judge truncation.
+
+Scanned-PDF detection (issue #1):
+  pypdf's ``extract_text()`` returns an empty string for image-only pages
+  (the common failure mode for older arXiv or conference-scan PDFs). We
+  flag the document as ``scanned`` when the text yield per page is
+  suspiciously low, and recommend an OCR tool in the stderr warning.
 
 Usage:
     python fetch_pdf.py --arxiv-id 2401.12345
@@ -26,6 +32,9 @@ Exit codes:
     2  argparse error (default)
     3  PDF parse failure
     4  missing optional dependency (pypdf) with actionable message
+
+Shared helpers from ``skills/_lib/``: net, cache, rate_limit — see
+``search_arxiv.py`` for the rationale.
 """
 from __future__ import annotations
 
@@ -33,36 +42,44 @@ import argparse
 import io
 import json
 import os
+import pathlib
 import re
 import sys
-import time
 import urllib.error
 import urllib.parse
-import urllib.request
 from typing import Optional, Tuple
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+from _lib import cache, net, rate_limit  # noqa: E402
+
 ARXIV_PDF_TEMPLATE = "https://arxiv.org/pdf/{arxiv_id}.pdf"
-USER_AGENT = "arxiv-research-toolkit/0.1 (+https://github.com/RintaroMatsumoto/arxiv-research-toolkit)"
-RETRY_BACKOFF_SECONDS = 3.0
 DEFAULT_MAX_CHARS = 80_000  # ~20k tokens; enough for most papers, caps cost.
+PDF_CACHE_TTL = 7 * 24 * 60 * 60  # 7 d for paper PDFs (treat as stable).
 
 # Accept plain 2401.12345, 2401.12345v2, and older math.GT/0309136-style IDs.
-ARXIV_ID_RE = re.compile(r"^[a-zA-Z\-\.]*\/?\d{4}\.\d{4,5}(v\d+)?$|^[a-zA-Z\-\.]+\/\d{7}(v\d+)?$")
+ARXIV_ID_RE = re.compile(
+    r"^[a-zA-Z\-\.]*\/?\d{4}\.\d{4,5}(v\d+)?$|^[a-zA-Z\-\.]+\/\d{7}(v\d+)?$"
+)
+
+# Heuristic threshold: if fewer than this many non-whitespace chars per
+# page are recovered, the PDF is almost certainly image-only / scanned.
+SCANNED_CHARS_PER_PAGE = 50
 
 
-def _fetch_bytes(url: str) -> bytes:
-    """GET a URL with one retry on transient HTTP errors."""
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            return resp.read()
-    except (urllib.error.HTTPError, urllib.error.URLError) as err:
-        sys.stderr.write(
-            f"pdf fetch failed ({err}); retrying in {RETRY_BACKOFF_SECONDS}s...\n"
-        )
-        time.sleep(RETRY_BACKOFF_SECONDS)
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            return resp.read()
+def _fetch_pdf_bytes(url: str) -> bytes:
+    """Fetch PDF bytes through the shared cache + rate limiter + net helpers."""
+    host = rate_limit.host_of(url) or "arxiv.org"
+
+    def _go() -> bytes:
+        rate_limit.acquire(host)
+        return net.fetch_bytes(url, timeout=60, retries=1)
+
+    return cache.memoized(
+        source="arxiv-pdf",
+        key=url,
+        fetcher=_go,
+        ttl_seconds=PDF_CACHE_TTL,
+    )
 
 
 def resolve_source(
@@ -76,11 +93,13 @@ def resolve_source(
                 f"warning: '{arxiv_id}' does not look like a canonical arXiv id; "
                 "attempting anyway.\n"
             )
-        pdf_url = ARXIV_PDF_TEMPLATE.format(arxiv_id=urllib.parse.quote(arxiv_id, safe="/."))
-        body = _fetch_bytes(pdf_url)
+        pdf_url = ARXIV_PDF_TEMPLATE.format(
+            arxiv_id=urllib.parse.quote(arxiv_id, safe="/.")
+        )
+        body = _fetch_pdf_bytes(pdf_url)
         return body, {"source": "arxiv", "arxiv_id": arxiv_id, "url": pdf_url}
     if url:
-        body = _fetch_bytes(url)
+        body = _fetch_pdf_bytes(url)
         return body, {"source": "url", "url": url}
     if path:
         with open(path, "rb") as fh:
@@ -89,8 +108,12 @@ def resolve_source(
     raise ValueError("resolve_source called with no inputs")
 
 
-def extract_text(pdf_bytes: bytes) -> Tuple[str, int]:
-    """Extract text from PDF bytes. Returns (text, page_count)."""
+def extract_text(pdf_bytes: bytes) -> Tuple[str, int, bool]:
+    """Extract text. Returns (text, page_count, scanned_flag).
+
+    ``scanned_flag`` is True when pypdf returned essentially nothing —
+    typical for image-only PDFs that need OCR.
+    """
     try:
         import pypdf  # type: ignore
     except ImportError:
@@ -119,7 +142,21 @@ def extract_text(pdf_bytes: bytes) -> Tuple[str, int]:
     # Collapse excessive whitespace that pypdf often leaves behind.
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip(), page_count
+    text = text.strip()
+
+    # Scanned-PDF heuristic: look at recovered non-whitespace density.
+    nonspace = sum(1 for ch in text if not ch.isspace())
+    per_page = nonspace / page_count if page_count else 0
+    scanned = page_count > 0 and per_page < SCANNED_CHARS_PER_PAGE
+    if scanned:
+        sys.stderr.write(
+            "warning: PDF appears to be image-only / scanned "
+            f"(~{per_page:.0f} text chars/page). pypdf cannot extract meaningful "
+            "text. Install ocrmypdf (or equivalent) and re-run:\n"
+            "  ocrmypdf --skip-text input.pdf output.pdf\n"
+            "then pass the OCR'd copy with --path.\n"
+        )
+    return text, page_count, scanned
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -129,7 +166,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         description=(
             "Fetch a paper PDF (arXiv ID, URL, or local path), extract its "
             "plain text with pypdf, and emit text to stdout preceded by a "
-            "JSON metadata header line."
+            "JSON metadata header line. Flags scanned/image-only PDFs."
         ),
     )
     src = p.add_mutually_exclusive_group(required=True)
@@ -155,6 +192,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     """CLI entry point."""
+    net.ensure_utf8_stdout()
     args = build_arg_parser().parse_args(argv)
 
     try:
@@ -163,7 +201,7 @@ def main(argv=None) -> int:
         sys.stderr.write(f"could not read PDF: {err}\n")
         return 1
 
-    text, page_count = extract_text(pdf_bytes)
+    text, page_count, scanned = extract_text(pdf_bytes)
     truncated = False
     if args.max_chars and len(text) > args.max_chars:
         text = text[: args.max_chars]
@@ -175,6 +213,7 @@ def main(argv=None) -> int:
         "byte_count": len(pdf_bytes),
         "char_count": len(text),
         "truncated": truncated,
+        "scanned": scanned,
     }
     sys.stdout.write(json.dumps(header, ensure_ascii=False) + "\n")
     if not args.header_only:

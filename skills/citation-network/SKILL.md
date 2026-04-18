@@ -1,6 +1,6 @@
 ---
 name: citation-network
-description: Use when the user wants to explore the citation graph around a specific paper — "show me what this paper cites and what cites it", "build a 2-hop reference graph around arXiv 2401.12345", "この論文の引用ネットワークを可視化して". Walks Semantic Scholar's graph API breadth-first from one or more seed papers up to a depth limit and emits a JSON node/edge graph plus an optional SVG. Do NOT use for flat paper search (paper-search), single-paper summaries (paper-summarize), or Zotero export (zotero-export).
+description: Use when the user wants to explore the citation graph around a specific paper — "show me what this paper cites and what cites it", "build a 2-hop reference graph around arXiv 2401.12345", "この論文の引用ネットワークを可視化して". Walks Semantic Scholar's graph API breadth-first from one or more seed papers up to a depth limit and emits a JSON node/edge graph plus optional SVG (circle or force layout), GraphViz DOT, and GraphML outputs. Do NOT use for flat paper search (paper-search), single-paper summaries (paper-summarize), or Zotero export (zotero-export).
 ---
 
 # Citation Network
@@ -55,7 +55,11 @@ Flags:
 | `--depth` | BFS depth (default 1; try 2 with caution — node count explodes) |
 | `--direction` | `references` (default), `citations`, or `both` |
 | `--max-nodes` | hard cap on graph size (default 50, max 300) |
-| `--out-json` / `--out-svg` | write outputs to disk instead of stdout |
+| `--layout` | SVG layout: `circle` (default, good ≲ 30 nodes) or `force` (Fruchterman-Reingold, scales) |
+| `--out-json` | write graph JSON to disk instead of stdout |
+| `--out-svg` | write an SVG visualization to this path |
+| `--out-dot` | write a GraphViz DOT file (render with `dot -Tpng`, `neato`, etc.) |
+| `--out-graphml` | write a GraphML file (readable by Gephi, yEd, networkx) |
 | `--api-key` | Semantic Scholar API key (or use `SEMANTIC_SCHOLAR_API_KEY`) |
 
 ## Script output contract
@@ -116,11 +120,20 @@ Edges are always **citer → cited**, regardless of the direction flag.
 - Identifier resolution: arXiv IDs become `arXiv:<id>` (version stripped),
   DOIs become `DOI:<doi>`, everything else is passed through as a native
   S2 paperId.
-- The SVG layout is a deliberate simple-circle to avoid pulling in a
-  heavy graph library. It is legible up to ~60 nodes; beyond that the
-  user should request the JSON and use an external tool (Gephi, Cytoscape).
-- Rate limit: 1.1 s sleep between every S2 call. A `--depth 2
-  --max-nodes 100` walk will take roughly 2 minutes on the free tier.
+- **Layouts**: `circle` is deterministic and legible up to ~60 nodes.
+  `force` runs an in-process Fruchterman-Reingold spring simulation
+  (120 iterations, stdlib only, seeded for reproducibility) and handles
+  denser graphs better. For even bigger graphs pipe `--out-dot` to
+  GraphViz's `sfdp`/`neato` or `--out-graphml` to Gephi.
+- **DOT output** is a plain digraph with node/edge styling preserved.
+  Render with `dot -Tpng graph.dot -o graph.png` or
+  `neato -Tsvg graph.dot -o graph.svg`.
+- **GraphML output** exposes `title`, `year`, `venue`, and `is_seed`
+  as typed node attributes, ready for `networkx.read_graphml()`.
+- Rate limiting and caching are now handled by the shared `_lib`:
+  the S2 rate limiter enforces ~1 req/s (cross-process), metadata is
+  cached for 7 days, and reference lists are cached immutably so a
+  repeat walk is near-instant.
 
 ## Chaining
 
